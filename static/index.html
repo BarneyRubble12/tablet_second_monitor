@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tablet Second Monitor</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #screen {
+            max-width: 100%;
+            height: auto;
+            object-fit: contain;
+        }
+        .status {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 4px;
+            z-index: 1000;
+        }
+        .fps {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 4px;
+            z-index: 1000;
+        }
+        .controls {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 4px;
+            z-index: 1000;
+        }
+        .controls button {
+            background: #333;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .controls button:hover {
+            background: #444;
+        }
+        .quality-slider {
+            width: 100px;
+        }
+    </style>
+</head>
+<body>
+    <div class="status" id="status">Connecting...</div>
+    <div class="fps" id="fps">0 FPS</div>
+    <div class="controls">
+        <button id="prevDisplay">Previous Display</button>
+        <button id="nextDisplay">Next Display</button>
+        <input type="range" id="quality" class="quality-slider" min="1" max="100" value="80">
+        <span id="qualityValue">80%</span>
+    </div>
+    <img id="screen" alt="Remote Screen">
+    <script>
+        const status = document.getElementById('status');
+        const fps = document.getElementById('fps');
+        const screen = document.getElementById('screen');
+        const prevDisplay = document.getElementById('prevDisplay');
+        const nextDisplay = document.getElementById('nextDisplay');
+        const qualitySlider = document.getElementById('quality');
+        const qualityValue = document.getElementById('qualityValue');
+        let frameCount = 0;
+        let lastFpsUpdate = performance.now();
+        let ws = null;
+        let currentDisplay = 0;
+        let displayCount = 1;
+
+        function updateFps() {
+            const now = performance.now();
+            const elapsed = now - lastFpsUpdate;
+            if (elapsed >= 1000) {
+                fps.textContent = `${Math.round((frameCount * 1000) / elapsed)} FPS`;
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+        }
+
+        function sendMessage(type, data = {}) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type, ...data }));
+            }
+        }
+
+        function connect() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+            ws.onopen = () => {
+                status.textContent = 'Connected';
+                // Request display count
+                sendMessage('getDisplayCount');
+            };
+
+            ws.onclose = () => {
+                status.textContent = 'Disconnected - Reconnecting...';
+                setTimeout(connect, 1000);
+            };
+
+            ws.onerror = (error) => {
+                status.textContent = 'Error: ' + error;
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'displayCount') {
+                        displayCount = data.count;
+                        updateDisplayControls();
+                    } else {
+                        // Handle image data
+                        const blob = new Blob([event.data], { type: 'image/jpeg' });
+                        const url = URL.createObjectURL(blob);
+                        screen.src = url;
+                        frameCount++;
+                        updateFps();
+                    }
+                } catch (e) {
+                    // If parsing fails, assume it's image data
+                    const blob = new Blob([event.data], { type: 'image/jpeg' });
+                    const url = URL.createObjectURL(blob);
+                    screen.src = url;
+                    frameCount++;
+                    updateFps();
+                }
+            };
+        }
+
+        function updateDisplayControls() {
+            prevDisplay.disabled = currentDisplay === 0;
+            nextDisplay.disabled = currentDisplay === displayCount - 1;
+        }
+
+        // Event Listeners
+        prevDisplay.addEventListener('click', () => {
+            if (currentDisplay > 0) {
+                currentDisplay--;
+                sendMessage('setDisplay', { index: currentDisplay });
+                updateDisplayControls();
+            }
+        });
+
+        nextDisplay.addEventListener('click', () => {
+            if (currentDisplay < displayCount - 1) {
+                currentDisplay++;
+                sendMessage('setDisplay', { index: currentDisplay });
+                updateDisplayControls();
+            }
+        });
+
+        qualitySlider.addEventListener('input', () => {
+            const quality = qualitySlider.value;
+            qualityValue.textContent = `${quality}%`;
+            sendMessage('setQuality', { quality: parseInt(quality) });
+        });
+
+        // Touch event handling
+        let isTouching = false;
+
+        function getRelativeCoordinates(e) {
+            const rect = screen.getBoundingClientRect();
+            const scaleX = screen.naturalWidth / rect.width;
+            const scaleY = screen.naturalHeight / rect.height;
+            
+            return {
+                x: (e.touches[0].clientX - rect.left) * scaleX,
+                y: (e.touches[0].clientY - rect.top) * scaleY
+            };
+        }
+
+        screen.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            isTouching = true;
+            const coords = getRelativeCoordinates(e);
+            sendMessage('touch', { type: 'start', ...coords });
+        });
+
+        screen.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (isTouching) {
+                const coords = getRelativeCoordinates(e);
+                sendMessage('touch', { type: 'move', ...coords });
+            }
+        });
+
+        screen.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (isTouching) {
+                isTouching = false;
+                sendMessage('touch', { type: 'end' });
+            }
+        });
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html> 

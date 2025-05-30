@@ -1,0 +1,40 @@
+[package]
+name = "tablet_second_monitor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A Rust application to use iPad as a second monitor"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.36", features = ["full"] }
+
+# Web framework and WebSocket support
+warp = "0.3"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Screen capture (macOS)
+core-graphics = "0.22.3"
+core-graphics-types = "0.1"
+
+# Image processing
+image = "0.24"
+jpeg-decoder = "0.3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Configuration
+config = "0.13"
+
+[dev-dependencies]
+tokio-test = "0.4" 
