@@ -3,6 +3,7 @@ use crate::error::AppError;
 use core_graphics::display::CGDisplay;
 use image::{ImageBuffer, Rgba};
 use std::time::Duration;
+use std::thread;
 
 pub struct ScreenCapture {
     config: CaptureConfig,
@@ -12,21 +13,41 @@ pub struct ScreenCapture {
 
 impl ScreenCapture {
     pub fn new(config: CaptureConfig) -> Result<Self, AppError> {
-        // Check if we have screen recording permission
-        if !Self::has_screen_recording_permission() {
+        // Try to get displays with retries
+        let mut retries = 3;
+        let mut displays = Vec::new();
+        
+        while retries > 0 {
+            match CGDisplay::active_displays() {
+                Ok(active_displays) => {
+                    displays = active_displays.into_iter()
+                        .map(|id| CGDisplay::new(id))
+                        .collect();
+                    if !displays.is_empty() {
+                        break;
+                    }
+                }
+                Err(_) => {}
+            }
+            retries -= 1;
+            if retries > 0 {
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+
+        if displays.is_empty() {
             return Err(AppError::CaptureError(
-                "Screen recording permission not granted. Please grant permission in System Settings > Privacy & Security > Screen Recording".to_string()
+                "No displays found. Please make sure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording and restart the application.".to_string()
             ));
         }
 
-        let displays: Vec<_> = CGDisplay::active_displays()
-            .map_err(|e| AppError::CaptureError(format!("Failed to get displays: {}", e)))?
-            .into_iter()
-            .map(|id| CGDisplay::new(id))
-            .collect();
-        
-        if displays.is_empty() {
-            return Err(AppError::CaptureError("No displays found".to_string()));
+        // Verify we can actually capture
+        if let Some(display) = displays.first() {
+            if display.image().is_none() {
+                return Err(AppError::CaptureError(
+                    "Screen recording permission not granted. Please grant permission in System Settings > Privacy & Security > Screen Recording and restart the application.".to_string()
+                ));
+            }
         }
 
         Ok(Self {
@@ -34,19 +55,6 @@ impl ScreenCapture {
             displays,
             current_display: 0,
         })
-    }
-
-    fn has_screen_recording_permission() -> bool {
-        // Try to capture a small portion of the screen to check permissions
-        if let Ok(displays) = CGDisplay::active_displays() {
-            if let Some(id) = displays.first() {
-                let display = CGDisplay::new(*id);
-                if let Some(_) = display.image() {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     pub fn get_display_count(&self) -> usize {
@@ -86,13 +94,9 @@ impl ScreenCapture {
 
         // Draw the display into the context
         let image = display.image().ok_or_else(|| {
-            if !Self::has_screen_recording_permission() {
-                AppError::CaptureError(
-                    "Screen recording permission not granted. Please grant permission in System Settings > Privacy & Security > Screen Recording".to_string()
-                )
-            } else {
-                AppError::CaptureError("Failed to get display image".to_string())
-            }
+            AppError::CaptureError(
+                "Failed to capture screen. Please check screen recording permissions and restart the application.".to_string()
+            )
         })?;
 
         context.draw_image(bounds, &image);

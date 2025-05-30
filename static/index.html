@@ -68,11 +68,24 @@
         .quality-slider {
             width: 100px;
         }
+        .connection-quality {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 4px;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
     <div class="status" id="status">Connecting...</div>
     <div class="fps" id="fps">0 FPS</div>
+    <div class="connection-quality" id="connectionQuality">Connection: Checking...</div>
     <div class="controls">
         <button id="prevDisplay">Previous Display</button>
         <button id="nextDisplay">Next Display</button>
@@ -88,11 +101,21 @@
         const nextDisplay = document.getElementById('nextDisplay');
         const qualitySlider = document.getElementById('quality');
         const qualityValue = document.getElementById('qualityValue');
+        const connectionQuality = document.getElementById('connectionQuality');
+        
         let frameCount = 0;
         let lastFpsUpdate = performance.now();
         let ws = null;
         let currentDisplay = 0;
         let displayCount = 1;
+        let reconnectAttempts = 0;
+        let maxReconnectAttempts = 10;
+        let reconnectDelay = 1000;
+        let pingInterval = null;
+        let lastPongTime = 0;
+        let connectionStartTime = 0;
+        let frameLatencies = [];
+        let isReconnecting = false;
 
         function updateFps() {
             const now = performance.now();
@@ -104,28 +127,84 @@
             }
         }
 
+        function updateConnectionQuality(latency) {
+            frameLatencies.push(latency);
+            if (frameLatencies.length > 10) {
+                frameLatencies.shift();
+            }
+            
+            const avgLatency = frameLatencies.reduce((a, b) => a + b, 0) / frameLatencies.length;
+            let quality = 'Good';
+            let color = '#4CAF50';
+            
+            if (avgLatency > 200) {
+                quality = 'Poor';
+                color = '#f44336';
+            } else if (avgLatency > 100) {
+                quality = 'Fair';
+                color = '#FFC107';
+            }
+            
+            connectionQuality.textContent = `Connection: ${quality} (${Math.round(avgLatency)}ms)`;
+            connectionQuality.style.color = color;
+        }
+
         function sendMessage(type, data = {}) {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type, ...data }));
             }
         }
 
+        function startPingInterval() {
+            if (pingInterval) {
+                clearInterval(pingInterval);
+            }
+            pingInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    sendMessage('ping', { timestamp: Date.now() });
+                }
+            }, 5000);
+        }
+
         function connect() {
+            if (isReconnecting) return;
+            isReconnecting = true;
+            
+            if (ws) {
+                ws.close();
+            }
+
             ws = new WebSocket(`ws://${window.location.host}/ws`);
 
             ws.onopen = () => {
                 status.textContent = 'Connected';
-                // Request display count
+                connectionStartTime = Date.now();
+                reconnectAttempts = 0;
+                reconnectDelay = 1000;
+                isReconnecting = false;
+                startPingInterval();
                 sendMessage('getDisplayCount');
             };
 
             ws.onclose = () => {
+                isReconnecting = false;
                 status.textContent = 'Disconnected - Reconnecting...';
-                setTimeout(connect, 1000);
+                if (pingInterval) {
+                    clearInterval(pingInterval);
+                }
+                
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    reconnectDelay = Math.min(reconnectDelay * 1.5, 30000); // Max 30 second delay
+                    setTimeout(connect, reconnectDelay);
+                } else {
+                    status.textContent = 'Connection failed - Please refresh the page';
+                }
             };
 
             ws.onerror = (error) => {
-                status.textContent = 'Error: ' + error;
+                console.error('WebSocket error:', error);
+                status.textContent = 'Connection error - Retrying...';
             };
 
             ws.onmessage = (event) => {
@@ -134,21 +213,34 @@
                     if (data.type === 'displayCount') {
                         displayCount = data.count;
                         updateDisplayControls();
+                    } else if (data.type === 'pong') {
+                        const latency = Date.now() - data.timestamp;
+                        updateConnectionQuality(latency);
                     } else {
                         // Handle image data
+                        const receiveTime = Date.now();
                         const blob = new Blob([event.data], { type: 'image/jpeg' });
                         const url = URL.createObjectURL(blob);
                         screen.src = url;
                         frameCount++;
                         updateFps();
+                        
+                        // Calculate frame latency
+                        const frameLatency = receiveTime - connectionStartTime;
+                        updateConnectionQuality(frameLatency);
                     }
                 } catch (e) {
                     // If parsing fails, assume it's image data
+                    const receiveTime = Date.now();
                     const blob = new Blob([event.data], { type: 'image/jpeg' });
                     const url = URL.createObjectURL(blob);
                     screen.src = url;
                     frameCount++;
                     updateFps();
+                    
+                    // Calculate frame latency
+                    const frameLatency = receiveTime - connectionStartTime;
+                    updateConnectionQuality(frameLatency);
                 }
             };
         }
@@ -215,6 +307,21 @@
             if (isTouching) {
                 isTouching = false;
                 sendMessage('touch', { type: 'end' });
+            }
+        });
+
+        // Handle page visibility changes
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                if (pingInterval) {
+                    clearInterval(pingInterval);
+                }
+            } else {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    startPingInterval();
+                } else {
+                    connect();
+                }
             }
         });
 
